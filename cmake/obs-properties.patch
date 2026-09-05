@@ -1,0 +1,99 @@
+--- a/shared/properties-view/properties-view.cpp
++++ b/shared/properties-view/properties-view.cpp
+@@ -42,6 +42,11 @@
+ #include <string>
+ #include <obs-frontend-api.h>
+ 
++// Older OBS SDKs do not deprecate these APIs or provide this warning macro.
++#ifndef PRAGMA_DISABLE_DEPRECATION
++#define PRAGMA_DISABLE_DEPRECATION
++#endif
++
+ using namespace std;
+ 
+ static inline QColor color_from_int(long long val)
+@@ -94,7 +99,7 @@
+ 		OBSObject strongObj = GetObject();
+ 		void *obj = strongObj ? strongObj.Get() : rawObj;
+ 		if (obj) {
+-			properties = reloadCallback(obj);
++			properties = reloadCallback(callbackContext ? callbackContext : obj);
+ 		}
+ 	} else {
+ 		properties = reloadCallback((void *)type.c_str());
+@@ -167,13 +172,13 @@
+ 	QScrollBar *scroll = horizontalScrollBar();
+ 	if (scroll) {
+ 		int hend = scroll->maximum() + scroll->pageStep();
+-		scroll->setValue(h * hend / old_hend);
++		scroll->setValue(old_hend > 0 ? h * hend / old_hend : 0);
+ 	}
+ 
+ 	scroll = verticalScrollBar();
+ 	if (scroll) {
+ 		int vend = scroll->maximum() + scroll->pageStep();
+-		scroll->setValue(v * vend / old_vend);
++		scroll->setValue(old_vend > 0 ? v * vend / old_vend : 0);
+ 	}
+ }
+ 
+@@ -2108,7 +2113,8 @@
+ 			OBSObject strongObj = view->GetObject();
+ 			void *obj = strongObj ? strongObj.Get() : view->rawObj;
+ 			if (obj && view->callback && !view->deferUpdate) {
+-				view->callback(obj, old_settings_cache, view->settings);
++				view->callback(view->callbackContext ? view->callbackContext : obj, old_settings_cache,
++					       view->settings);
+ 			}
+ 
+ 			ru = false;
+@@ -2128,7 +2134,7 @@
+ 		OBSObject strongObj = view->GetObject();
+ 		void *obj = strongObj ? strongObj.Get() : view->rawObj;
+ 		if (obj) {
+-			view->visUpdateCb(obj, view->settings);
++			view->visUpdateCb(view->callbackContext ? view->callbackContext : obj, view->settings);
+ 		}
+ 	}
+ 
+--- a/shared/properties-view/properties-view.hpp
++++ b/shared/properties-view/properties-view.hpp
+@@ -88,10 +88,11 @@
+ 
+ private:
+ 	QWidget *widget = nullptr;
+-	OBSProperties properties;
++	OBSRefAutoRelease<obs_properties_t *, obs_properties_destroy> properties;
+ 	OBSData settings;
+ 	OBSWeakObjectAutoRelease weakObj;
+ 	void *rawObj = nullptr;
++	void *callbackContext = nullptr;
+ 	std::string type;
+ 	PropertiesReloadCallback reloadCallback;
+ 	PropertiesUpdateCallback callback = nullptr;
+@@ -100,7 +101,7 @@
+ 	std::vector<std::unique_ptr<WidgetInfo>> children;
+ 	std::string lastFocused;
+ 	QWidget *lastWidget = nullptr;
+-	bool deferUpdate;
++	bool deferUpdate = false;
+ 	bool enableDefer = true;
+ 	bool disableScrolling = false;
+ 
+@@ -168,13 +169,14 @@
+ 	inline void UpdateSettings()
+ 	{
+ 		if (callback) {
+-			callback(OBSGetStrongRef(weakObj), nullptr, settings);
++			callback(callbackContext ? callbackContext : OBSGetStrongRef(weakObj).Get(), nullptr, settings);
+ 		} else if (visUpdateCb) {
+-			visUpdateCb(OBSGetStrongRef(weakObj), settings);
++			visUpdateCb(callbackContext ? callbackContext : OBSGetStrongRef(weakObj).Get(), settings);
+ 		}
+ 	}
+ 	inline bool DeferUpdate() const { return deferUpdate; }
+ 	inline void SetDeferrable(bool deferrable) { enableDefer = deferrable; }
++	inline void SetCallbackContext(void *context) { callbackContext = context; }
+ 
+ 	inline OBSObject GetObject() const { return OBSGetStrongRef(weakObj); }
+ 
