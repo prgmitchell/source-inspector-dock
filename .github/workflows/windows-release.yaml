@@ -1,0 +1,217 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, master, 'release/**']
+    tags: ['v[0-9]*', '[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-signing-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-other:
+    name: Build macOS and Linux
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+
+  build:
+    name: Build and test Windows plugin
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version
+        id: metadata
+        run: |
+          $spec = Get-Content buildspec.json -Raw | ConvertFrom-Json
+          if ($spec.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Expected a numeric x.y.z version.' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -notin @($spec.version, "v$($spec.version)")) {
+            throw 'Release tag must match buildspec.json exactly (x.y.z or vx.y.z).'
+          }
+          "version=$($spec.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Configure
+        run: cmake --preset windows-ci-x64 -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build --preset windows-ci-x64 --config Release --parallel
+
+      - name: Test plugin
+        run: ctest --test-dir build_x64 -C Release --output-on-failure
+
+      - name: Stage plugin
+        run: |
+          cmake --install build_x64 --config Release --prefix stage
+          if ($LASTEXITCODE -ne 0) { throw 'Staging failed.' }
+          Copy-Item -LiteralPath LICENSE,README.md -Destination stage/source-inspector-dock
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-payload-${{ github.sha }}
+          path: stage/source-inspector-dock/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign DLL, installer, and uninstaller
+    needs: build
+    runs-on: windows-2022
+    environment: windows-release
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      WINDOWS_SIGNING_PUBLISHER: MITCHELL SOFTWARE SOLUTIONS LLC
+      AZURE_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+      AZURE_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+      AZURE_ARTIFACT_SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-payload-${{ github.sha }}
+          path: stage/source-inspector-dock
+
+      - name: Validate signing configuration
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          foreach ($name in @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID',
+                              'AZURE_ARTIFACT_SIGNING_ENDPOINT', 'AZURE_ARTIFACT_SIGNING_ACCOUNT', 'AZURE_ARTIFACT_SIGNING_PROFILE')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing windows-release variable $name. Run scripts/release/Setup-GitHubSigning.ps1."
+            }
+          }
+          if ($env:AZURE_ARTIFACT_SIGNING_ENDPOINT.TrimEnd('/') -ne 'https://eus.codesigning.azure.net') {
+            throw 'Expected the MIDIMaster East US signing endpoint.'
+          }
+
+      - name: Azure login with GitHub OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install pinned signing and installer tools
+        id: tools
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
+          Install-Module ArtifactSigning -RequiredVersion 0.1.17 -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
+          $compiler = & ./scripts/release/Install-InnoSetup.ps1
+          "compiler=$compiler" >> $env:GITHUB_OUTPUT
+
+      - name: Sign plugin DLL
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\stage\source-inspector-dock\bin\64bit\source-inspector-dock.dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Source Inspector Dock
+          description-url: https://github.com/prgmitchell/source-inspector-dock
+
+      - name: Build and verify signed installer and uninstaller
+        env:
+          INNO_COMPILER: ${{ steps.tools.outputs.compiler }}
+        run: |
+          ./scripts/release/Build-WindowsInstaller.ps1 -SourceDirectory stage/source-inspector-dock `
+            -OutputDirectory release -CompilerPath $env:INNO_COMPILER
+
+      - name: Verify installed payload and uninstaller
+        env:
+          PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          ./scripts/release/Test-WindowsInstaller.ps1 `
+            -InstallerPath "release/source-inspector-dock-$env:PACKAGE_VERSION-windows-x64-setup.exe" `
+            -StagedDll stage/source-inspector-dock/bin/64bit/source-inspector-dock.dll
+
+      - name: Package signed portable ZIP and generate checksums
+        env:
+          PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          # Archive the signed staging folder. Do not reinstall the unsigned build over it.
+          $base = "source-inspector-dock-$env:PACKAGE_VERSION-windows-x64"
+          Compress-Archive -LiteralPath stage/source-inspector-dock -DestinationPath "release/$base.zip"
+          $files = @("release/$base-setup.exe", "release/$base.zip")
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($file))"
+          }
+          $lines | Set-Content release/SHA256SUMS.txt -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-inspector-dock-${{ needs.build.outputs.version }}-windows-x64-signed
+          path: |
+            release/*-setup.exe
+            release/*.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Create draft GitHub release
+    if: github.ref_type == 'tag'
+    needs: [build, sign, build-other]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-inspector-dock-${{ needs.build.outputs.version }}-windows-x64-signed
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: source-inspector-dock-${{ needs.build.outputs.version }}-macos-universal-*
+          merge-multiple: true
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: source-inspector-dock-${{ needs.build.outputs.version }}-ubuntu-24.04-x86_64-*
+          merge-multiple: true
+          path: release
+      - name: Check release packages and generate checksums
+        run: |
+          set -euo pipefail
+          cd release
+          # Missing packages fail the release rather than publishing a partial set.
+          sha256sum -- *-setup.exe *.zip *.pkg *.deb > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: ${{ github.ref_name }}
+          name: Source Inspector Dock ${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*-setup.exe
+            release/*.zip
+            release/*.pkg
+            release/*.deb
+            release/SHA256SUMS.txt
