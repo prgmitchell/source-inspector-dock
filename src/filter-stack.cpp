@@ -13,6 +13,13 @@
 #include <QSignalBlocker>
 #include <algorithm>
 
+namespace {
+size_t filterGroup(uint32_t flags)
+{
+	return (flags & (OBS_SOURCE_AUDIO | OBS_SOURCE_ASYNC)) ? 0 : 1;
+}
+} // namespace
+
 bool inspector::filterCompatible(uint32_t sourceFlags, uint32_t filterFlags)
 {
 	if (filterFlags & (OBS_SOURCE_DEPRECATED | OBS_SOURCE_CAP_DISABLED))
@@ -39,6 +46,19 @@ FilterStack::FilterStack(obs_source_t *source_, QSettings *preferences_, QWidget
 	empty = new QLabel(text("NoFilters"));
 	empty->setWordWrap(true);
 	layout->addWidget(empty);
+	const char *titles[] = {"AudioVideoFilters", "EffectFilters"};
+	for (size_t i = 0; i < groups.size(); ++i) {
+		auto &group = groups[i];
+		group.widget = new QWidget;
+		group.layout = new QVBoxLayout(group.widget);
+		group.layout->setContentsMargins(0, 0, 0, 0);
+		auto *heading = new QLabel(text(titles[i]));
+		auto font = heading->font();
+		font.setBold(true);
+		heading->setFont(font);
+		group.layout->addWidget(heading);
+		layout->addWidget(group.widget);
+	}
 	synchronize();
 }
 
@@ -99,6 +119,8 @@ void FilterStack::synchronize()
 		actions->setAccessibleName(text("FilterActions"));
 		actions->setToolTip(text("FilterActions"));
 		actions->setPopupMode(QToolButton::InstantPopup);
+		// The ellipsis already identifies the menu; a second indicator overlaps it.
+		actions->setStyleSheet("QToolButton::menu-indicator { image: none; }");
 		auto *menu = new QMenu(actions);
 		menu->addAction(text("RenameFilter"), this, [this, filter] { rename(filter); });
 		menu->addAction(text("RemoveFilter"), this, [this, filter] { remove(filter); });
@@ -121,28 +143,30 @@ void FilterStack::synchronize()
 		});
 		connect(up, &QToolButton::clicked, this, [this, filter] { move(filter, OBS_ORDER_MOVE_UP); });
 		connect(down, &QToolButton::clicked, this, [this, filter] { move(filter, OBS_ORDER_MOVE_DOWN); });
-		layout()->addWidget(section);
+		groups[filterGroup(obs_source_get_output_flags(filter))].layout->addWidget(section);
 		filters.push_back({filter, section, enabled, editor, up, down});
 	}
 	std::sort(filters.begin(), filters.end(), [&](const Filter &a, const Filter &b) {
 		return std::find(current.begin(), current.end(), a.source) <
 		       std::find(current.begin(), current.end(), b.source);
 	});
-	auto *layout = static_cast<QVBoxLayout *>(this->layout());
+	std::array<int, 2> nextRow = {1, 1};
 	for (size_t i = 0; i < filters.size(); ++i) {
 		auto &filter = filters[i];
-		if (layout->indexOf(filter.section) != static_cast<int>(i) + 1) {
+		const auto group = filterGroup(obs_source_get_output_flags(filter.source));
+		auto *layout = groups[group].layout;
+		const int row = nextRow[group]++;
+		if (layout->indexOf(filter.section) != row) {
 			layout->removeWidget(filter.section);
-			layout->insertWidget(static_cast<int>(i) + 1, filter.section);
+			layout->insertWidget(row, filter.section);
 		}
 		const auto name = QString::fromUtf8(obs_source_get_name(filter.source));
 		filter.section->toggle->setText(name);
 		filter.section->toggle->setToolTip(name);
 		const QSignalBlocker blocker(filter.enabled);
 		filter.enabled->setChecked(obs_source_enabled(filter.source));
-		const bool async = (obs_source_get_output_flags(filter.source) & OBS_SOURCE_ASYNC) != 0;
-		auto sameKind = [async](const Filter &entry) {
-			return ((obs_source_get_output_flags(entry.source) & OBS_SOURCE_ASYNC) != 0) == async;
+		auto sameKind = [group](const Filter &entry) {
+			return filterGroup(obs_source_get_output_flags(entry.source)) == group;
 		};
 		filter.up->setEnabled(std::any_of(filters.begin(), filters.begin() + i, sameKind));
 		filter.down->setEnabled(std::any_of(filters.begin() + i + 1, filters.end(), sameKind));
@@ -156,12 +180,16 @@ bool FilterStack::setSearchQuery(const QString &query)
 {
 	searchQuery = query;
 	bool any = query.isEmpty();
+	std::array<bool, 2> groupMatches = {false, false};
 	for (auto &filter : filters) {
 		const bool nameMatches = filter.section->toggle->text().contains(query, Qt::CaseInsensitive);
 		const bool matches = filter.editor->setSearchQuery(nameMatches ? QString() : query) || nameMatches;
 		filter.section->setSearchState(!query.isEmpty(), matches);
+		groupMatches[filterGroup(obs_source_get_output_flags(filter.source))] |= matches;
 		any = any || matches;
 	}
+	for (size_t i = 0; i < groups.size(); ++i)
+		groups[i].widget->setVisible(groupMatches[i]);
 	empty->setVisible(filters.empty() && query.isEmpty());
 	return any;
 }
@@ -195,8 +223,11 @@ void FilterStack::addFilter()
 		}
 	}
 	std::sort(types.begin(), types.end());
+	std::array<QMenu *, 2> menus = {menu.addMenu(text("AudioVideoFilters")), menu.addMenu(text("EffectFilters"))};
 	for (const auto &[name, id] : types)
-		menu.addAction(name)->setData(id);
+		menus[filterGroup(obs_get_source_output_flags(id.toUtf8().constData()))]->addAction(name)->setData(id);
+	for (auto *group : menus)
+		group->menuAction()->setVisible(!group->isEmpty());
 	if (types.empty())
 		menu.addAction(text("NoCompatibleFilters"))->setEnabled(false);
 	if (auto *choice = menu.exec(QCursor::pos()))

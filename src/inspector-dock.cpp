@@ -15,7 +15,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QLineEdit>
-#include <QMessageBox>
+#include <QListWidget>
 #include <algorithm>
 
 namespace {
@@ -72,9 +72,27 @@ InspectorDock::InspectorDock(QWidget *parent) : QWidget(parent)
 	usage = new QToolButton;
 	usage->setObjectName("SourceUsage");
 	usage->setToolTip(text("SourceUsageTooltip"));
+	usage->setCheckable(true);
+	usage->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	usage->setArrowType(Qt::RightArrow);
 	usage->hide();
 	layout->addWidget(usage, 0, Qt::AlignLeft);
-	connect(usage, &QToolButton::clicked, this, [this] { showUsage(); });
+	usageList = new QListWidget;
+	usageList->setObjectName("SourceUsageScenes");
+	usageList->setAccessibleName(text("SourceUsage"));
+	usageList->setToolTip(text("SourceUsageDetails"));
+	usageList->setSelectionMode(QAbstractItemView::NoSelection);
+	usageList->setFocusPolicy(Qt::NoFocus);
+	usageList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	usageList->setTextElideMode(Qt::ElideRight);
+	usageList->hide();
+	layout->addWidget(usageList);
+	connect(usage, &QToolButton::toggled, this, [this](bool expanded) {
+		usage->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+		if (expanded)
+			updateUsage();
+		usageList->setVisible(expanded && !usageScenes.isEmpty());
+	});
 	searchInput = new QLineEdit;
 	searchInput->setObjectName("SearchSettings");
 	searchInput->setPlaceholderText(text("SearchSettings"));
@@ -158,6 +176,9 @@ void InspectorDock::clear(bool removed)
 	searchInput->setEnabled(false);
 	noMatches->hide();
 	usage->hide();
+	usage->setChecked(false);
+	usageList->hide();
+	usageList->clear();
 	usageScenes.clear();
 	usageRefresh.invalidate();
 }
@@ -247,7 +268,6 @@ void InspectorDock::populate()
 	sections->setContentsMargins(0, 0, 0, 0);
 	sections->setSpacing(10);
 	sections->setSizeConstraint(QLayout::SetMinAndMaxSize);
-	sections->setAlignment(Qt::AlignTop);
 	propertySection = new Section(text("SourceProperties"));
 	properties = new SourceProperties(source);
 	connect(
@@ -278,6 +298,8 @@ void InspectorDock::populate()
 	});
 	rememberSection(filterSection, "sections/filters");
 	sections->addWidget(filterSection);
+	// A stretch keeps sections at the top without clamping wrapped forms to sizeHint().
+	sections->addStretch();
 	scroll->setWidget(contents);
 	empty->hide();
 	scroll->show();
@@ -305,30 +327,31 @@ void InspectorDock::applySearch()
 
 void InspectorDock::updateUsage()
 {
-	usageScenes.clear();
 	if (!selectedItem)
 		return;
+	QStringList names;
 	obs_frontend_source_list scenes = {};
 	obs_frontend_get_scenes(&scenes);
 	for (size_t i = 0; i < scenes.sources.num; ++i) {
 		auto *source = scenes.sources.array[i];
 		if (inspector::sceneUsesSource(obs_scene_from_source(source), obs_sceneitem_get_source(selectedItem)))
-			usageScenes.push_back(QString::fromUtf8(obs_source_get_name(source)));
+			names.push_back(QString::fromUtf8(obs_source_get_name(source)));
 	}
 	obs_frontend_source_list_free(&scenes);
-	usageScenes.sort(Qt::CaseInsensitive);
+	names.sort(Qt::CaseInsensitive);
+	if (names != usageScenes) {
+		usageScenes = names;
+		usageList->clear();
+		for (const auto &name : usageScenes) {
+			auto *item = new QListWidgetItem(name, usageList);
+			item->setToolTip(name);
+		}
+	}
+	if (!usageScenes.isEmpty())
+		usageList->setFixedHeight(std::min(usageList->count(), 5) * usageList->sizeHintForRow(0) +
+					  2 * usageList->frameWidth());
+	usageList->setVisible(usage->isChecked() && !usageScenes.isEmpty());
 	usage->setText(usageScenes.size() == 1 ? text("UsedInOneScene") : text("UsedInScenes").arg(usageScenes.size()));
 	usage->show();
 	usageRefresh.restart();
-}
-
-void InspectorDock::showUsage()
-{
-	if (!selectedItem)
-		return;
-	updateUsage();
-	QMessageBox message(QMessageBox::Information, text("SourceUsage"),
-			    text("SourceUsageDetails").arg(usageScenes.join("\n")), QMessageBox::Ok, this);
-	message.setTextFormat(Qt::PlainText);
-	message.exec();
 }

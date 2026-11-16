@@ -60,7 +60,11 @@ TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QSet
 	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 	form->setRowWrapPolicy(QFormLayout::WrapLongRows);
 	if (preferences) {
-		auto *presetsRow = new QVBoxLayout;
+		// Keep the preset controls together when the form wraps.
+		auto *presetsWidget = new QWidget;
+		presetsWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		auto *presetsRow = new QVBoxLayout(presetsWidget);
+		presetsRow->setContentsMargins(0, 0, 0, 0);
 		presetChoice = new QComboBox;
 		presetChoice->setObjectName("TransformPresetChoice");
 		presetChoice->setAccessibleName(text("TransformPresets"));
@@ -69,10 +73,8 @@ TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QSet
 		auto *buttons = new QHBoxLayout;
 		auto *apply = new QPushButton(text("ApplyPreset"));
 		apply->setObjectName("ApplyPreset");
-		auto *manage = new QToolButton;
-		manage->setText(text("PresetActions"));
+		auto *manage = new QPushButton(text("PresetActions"));
 		manage->setObjectName("PresetActions");
-		manage->setPopupMode(QToolButton::InstantPopup);
 		auto *menu = new QMenu(manage);
 		menu->addAction(text("SavePreset"), this, [this] { savePreset(false); });
 		auto *update = menu->addAction(text("UpdatePreset"), this, [this] { savePreset(true); });
@@ -87,7 +89,7 @@ TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QSet
 		buttons->addWidget(apply);
 		buttons->addWidget(manage);
 		presetsRow->addLayout(buttons);
-		form->addRow(text("TransformPresets"), presetsRow);
+		form->addRow(text("TransformPresets"), presetsWidget);
 		connect(apply, &QPushButton::clicked, this, [this] { applyPreset(); });
 		connect(presetChoice, &QComboBox::currentIndexChanged, apply,
 			[apply](int index) { apply->setEnabled(index > 0); });
@@ -143,7 +145,10 @@ TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QSet
 			obs_sceneitem_set_info2(item, &info);
 		});
 	});
-	auto *actions = new QGridLayout;
+	auto *actionsWidget = new QWidget;
+	actionsWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	auto *actions = new QGridLayout(actionsWidget);
+	actions->setContentsMargins(0, 0, 0, 0);
 	int index = 0;
 	for (const char *name : {"ResetTransform", "FitToCanvas", "FlipHorizontal", "FlipVertical"}) {
 		auto *button = new QPushButton(text(name));
@@ -152,7 +157,7 @@ TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QSet
 		connect(button, &QPushButton::clicked, this, [this, name] { action(name); });
 		++index;
 	}
-	form->addRow(actions);
+	form->addRow(actionsWidget);
 	synchronize();
 }
 

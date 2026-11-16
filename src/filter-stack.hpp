@@ -2,12 +2,14 @@
 #pragma once
 #include <QWidget>
 #include <obs.hpp>
+#include <array>
 #include <vector>
 
 class QCheckBox;
 class QLabel;
 class QSettings;
 class QToolButton;
+class QVBoxLayout;
 class Section;
 class SourceProperties;
 
@@ -33,9 +35,14 @@ private:
 		QToolButton *up;
 		QToolButton *down;
 	};
+	struct Group {
+		QWidget *widget;
+		QVBoxLayout *layout;
+	};
 	OBSSource source;
 	QSettings *preferences;
 	QLabel *empty;
+	std::array<Group, 2> groups;
 	std::vector<Filter> filters;
 	QString searchQuery;
 	bool cancelled = false;

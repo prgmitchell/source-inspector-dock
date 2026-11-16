@@ -16,6 +16,7 @@ class TransformEditor;
 class SourceProperties;
 class QToolButton;
 class QLineEdit;
+class QListWidget;
 class FilterStack;
 
 class InspectorDock : public QWidget {
@@ -40,6 +41,7 @@ private:
 	QScrollArea *scroll;
 	QToolButton *pin;
 	QToolButton *usage;
+	QListWidget *usageList;
 	QLineEdit *searchInput;
 	QLabel *noMatches;
 	QStringList usageScenes;
@@ -55,6 +57,5 @@ private:
 	void populate();
 	void applySearch();
 	void updateUsage();
-	void showUsage();
 	void rememberSection(Section *section, const QString &key);
 };
