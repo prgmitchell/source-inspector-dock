@@ -12,7 +12,7 @@ $source = (Resolve-Path -LiteralPath $SourceDirectory).Path
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $spec = Get-Content -LiteralPath (Join-Path $root 'buildspec.json') -Raw | ConvertFrom-Json
 if ($spec.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Installer requires a three-part numeric buildspec version.' }
-foreach ($relative in @('bin/64bit/source-inspector-dock.dll', 'data/locale/en-US.ini', 'LICENSE', 'README.md')) {
+foreach ($relative in @('source-inspector-dock.dll', 'data/locale/en-US.ini', 'LICENSE', 'README.md')) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $relative) -PathType Leaf)) {
         throw "Missing installer input: $relative"
     }
@@ -32,7 +32,7 @@ if ($Unsigned) {
     $arguments += '/DSignedBuild=0'
 } else {
     & (Join-Path $PSScriptRoot 'Assert-Authenticode.ps1') `
-        -Path (Join-Path $source 'bin/64bit/source-inspector-dock.dll') `
+        -Path (Join-Path $source 'source-inspector-dock.dll') `
         -ExpectedPublisher 'MITCHELL SOFTWARE SOLUTIONS LLC' -RequireTimestamp | Out-Host
     $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
     $signer = Join-Path $PSScriptRoot 'Sign-WithArtifactSigning.ps1'

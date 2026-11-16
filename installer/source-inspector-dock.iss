@@ -52,11 +52,17 @@ CloseApplicationsFilter=source-inspector-dock.dll
 RestartApplications=no
 
 [Files]
-Source: "{#SourceDir}\bin\64bit\source-inspector-dock.dll"; DestDir: "{app}\bin\64bit"; Flags: ignoreversion
+Source: "{#SourceDir}\source-inspector-dock.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+Type: files; Name: "{app}\bin\64bit\source-inspector-dock.dll"
+Type: files; Name: "{app}\bin\64bit\source-inspector-dock.pdb"
+Type: dirifempty; Name: "{app}\bin\64bit"
+Type: dirifempty; Name: "{app}\bin"
+
 [Messages]
-WelcomeLabel2=This installs Source Inspector Dock for OBS Studio.%n%nClose OBS before continuing. After installation, start OBS and enable Docks > Source Inspector.
+WelcomeLabel2=This installs Source Inspector Dock for OBS Studio 33 or newer.%n%nClose OBS before continuing. After installation, start OBS and enable Docks > Source Inspector.
 FinishedLabel=Source Inspector Dock is installed.%n%nStart OBS and enable Docks > Source Inspector. Select a source to inspect its properties, transform, and filters.

@@ -15,8 +15,24 @@ discards unapplied changes. In Studio Mode, the dock follows the preview scene.
 
 Close OBS and download your package from [Releases](https://github.com/prgmitchell/source-inspector-dock/releases/latest).
 
-- **Windows:** run the installer, or extract the ZIP into `C:\ProgramData\obs-studio\plugins`. Signed by MITCHELL SOFTWARE SOLUTIONS LLC.
+- **Windows (OBS 33+):** run the installer, or extract the ZIP into `C:\ProgramData\obs-studio\plugins`. Signed by MITCHELL SOFTWARE SOLUTIONS LLC.
+- **Windows portable (OBS 33+):** extract the ZIP into the `plugins` folder at the root of your portable OBS installation. Create it if needed; portable OBS ignores plugins in `ProgramData`.
 - **macOS:** run the universal `.pkg`. Currently unsigned and not notarized.
 - **Ubuntu 24.04:** run `sudo apt install ./source-inspector-dock-*.deb`. Requires native OBS; Flatpak is not supported.
+
+The Windows package uses [OBS 33's plugin layout](https://obsproject.com/kb/legacy-plugin-developer-info):
+
+```text
+plugins/
+  source-inspector-dock/
+    source-inspector-dock.dll
+    data/
+      locale/
+        en-US.ini
+```
+
+When upgrading, the installer removes this plugin's old `bin\64bit` DLL and PDB.
+For ZIP upgrades, remove those old files yourself after extracting the new package.
+Windows users on OBS 32 or earlier should use a previous release with the legacy layout.
 
 GPL-2.0-or-later. Uses [OBS Studio's property editor](https://github.com/obsproject/obs-studio/tree/32.2.1/shared/properties-view), downloaded during the build.

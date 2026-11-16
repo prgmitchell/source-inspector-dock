@@ -125,7 +125,7 @@ jobs:
           endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\stage\source-inspector-dock\bin\64bit\source-inspector-dock.dll
+          files: ${{ github.workspace }}\stage\source-inspector-dock\source-inspector-dock.dll
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
