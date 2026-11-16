@@ -42,6 +42,14 @@ target_sources(
     src/section.hpp
     src/undo.cpp
     src/undo.hpp
+    src/filter-stack.cpp
+    src/filter-stack.hpp
+    src/form-search.cpp
+    src/form-search.hpp
+    src/scene-utils.cpp
+    src/scene-utils.hpp
+    src/transform-presets.cpp
+    src/transform-presets.hpp
 )
 
 if(APPLE)

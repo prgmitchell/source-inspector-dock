@@ -19,6 +19,14 @@ public:
 	QHBoxLayout *header;
 	QVBoxLayout *content;
 
+	void setSearchState(bool active, bool matches)
+	{
+		setVisible(!active || matches);
+		toggle->setEnabled(!active);
+		body->setVisible(active || toggle->isChecked());
+		toggle->setArrowType(active || toggle->isChecked() ? Qt::DownArrow : Qt::RightArrow);
+	}
+
 	explicit Section(const QString &title, QWidget *parent = nullptr) : QFrame(parent)
 	{
 		setObjectName("InspectorSection");

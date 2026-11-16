@@ -5,9 +5,26 @@ An OBS Studio dock for the selected source's properties, transform, and filters.
 ## Use
 
 Enable **Docks > Source Inspector**, then select a source. Expand each section to
-edit its settings. **Manage** opens OBS's filter dialog to add or reorder filters.
+edit its settings.
 
-Edits support undo. Locked items stay locked. Properties normally apply live;
+- **Pin** keeps the inspector on that source and scene item while you select other
+  sources or change scenes. **Unpin** follows selection again. Removing the item
+  or changing scene collections clears the pin.
+- **Search settings** finds property labels, transform controls, and filters by
+  name or setting. Matching sections expand while searching; clearing the search
+  restores their previous expanded or collapsed state.
+- **Add filter** lists compatible filters. Each filter has up/down buttons and an
+  **…** menu to rename or remove it. **Manage** still opens OBS's native dialog.
+- **Transform presets** save position, scale, rotation, alignment, bounds, and crop.
+  Use **Presets > Save current as preset…**, choose a name, then select it and click
+  **Apply preset** to recall it on any source. Presets also support update, rename,
+  and delete. They persist across OBS restarts and scene collections and use the
+  saved numeric values, so check the result on sources of different dimensions.
+- **Used in N scenes** lists scenes sharing the source, including groups and nested
+  scenes. Property and filter edits affect every reference; transforms affect only
+  the inspected scene item.
+
+Source edits, filter actions, and applying a preset support OBS undo/redo. Locked items stay locked. Properties normally apply live;
 devices with deferred settings show **Apply** and **Discard**. Leaving the source
 discards unapplied changes. In Studio Mode, the dock follows the preview scene.
 

@@ -2,6 +2,8 @@
 #pragma once
 #include <QWidget>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QStringList>
 #include <obs.hpp>
 #include <memory>
 #include <vector>
@@ -12,7 +14,9 @@ class QSettings;
 class Section;
 class TransformEditor;
 class SourceProperties;
-class QCheckBox;
+class QToolButton;
+class QLineEdit;
+class FilterStack;
 
 class InspectorDock : public QWidget {
 public:
@@ -25,13 +29,8 @@ public:
 	void resume();
 
 private:
-	struct Filter {
-		OBSSource source;
-		Section *section;
-		QCheckBox *enabled;
-		SourceProperties *editor;
-	};
 	QTimer timer;
+	QElapsedTimer usageRefresh;
 	OBSSource scene;
 	OBSSceneItem selectedItem;
 	std::vector<OBSSceneItem> previousSelection;
@@ -39,14 +38,23 @@ private:
 	QLabel *subtitle;
 	QLabel *empty;
 	QScrollArea *scroll;
+	QToolButton *pin;
+	QToolButton *usage;
+	QLineEdit *searchInput;
+	QLabel *noMatches;
+	QStringList usageScenes;
+	Section *propertySection = nullptr;
+	Section *transformSection = nullptr;
 	Section *filterSection = nullptr;
+	FilterStack *filterStack = nullptr;
 	TransformEditor *transform = nullptr;
 	SourceProperties *properties = nullptr;
-	std::vector<Filter> filters;
 	std::unique_ptr<QSettings> preferences;
 	bool stopped = false;
 	void inspectScene(obs_source_t *scene);
 	void populate();
-	void synchronizeFilters();
+	void applySearch();
+	void updateUsage();
+	void showUsage();
 	void rememberSection(Section *section, const QString &key);
 };

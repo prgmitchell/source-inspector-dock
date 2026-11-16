@@ -7,5 +7,7 @@
 namespace inspector {
 void updateSource(obs_source_t *source, obs_data_t *before, obs_data_t *after);
 void setFilterEnabled(obs_source_t *filter, bool enabled);
+void renameFilter(obs_source_t *filter, const QString &name);
+void editFilters(obs_source_t *source, const QString &label, const std::function<void()> &edit);
 void editTransform(obs_scene_t *root, obs_sceneitem_t *item, const QString &label, const std::function<void()> &edit);
 } // namespace inspector

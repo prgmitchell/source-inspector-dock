@@ -10,6 +10,12 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QMenu>
+#include <QMessageBox>
+#include <QSettings>
+#include <algorithm>
 
 namespace {
 QComboBox *alignmentCombo()
@@ -36,10 +42,11 @@ void selectValue(QComboBox *combo, int value)
 }
 } // namespace
 
-TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QWidget *parent)
+TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QSettings *preferences_, QWidget *parent)
 	: QWidget(parent),
 	  item(item_),
-	  rootScene(root)
+	  rootScene(root),
+	  preferences(preferences_)
 {
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
@@ -52,6 +59,41 @@ TransformEditor::TransformEditor(obs_scene_t *root, obs_sceneitem_t *item_, QWid
 	form->setContentsMargins(0, 0, 0, 0);
 	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 	form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+	if (preferences) {
+		auto *presetsRow = new QVBoxLayout;
+		presetChoice = new QComboBox;
+		presetChoice->setObjectName("TransformPresetChoice");
+		presetChoice->setAccessibleName(text("TransformPresets"));
+		presetChoice->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+		presetsRow->addWidget(presetChoice);
+		auto *buttons = new QHBoxLayout;
+		auto *apply = new QPushButton(text("ApplyPreset"));
+		apply->setObjectName("ApplyPreset");
+		auto *manage = new QToolButton;
+		manage->setText(text("PresetActions"));
+		manage->setObjectName("PresetActions");
+		manage->setPopupMode(QToolButton::InstantPopup);
+		auto *menu = new QMenu(manage);
+		menu->addAction(text("SavePreset"), this, [this] { savePreset(false); });
+		auto *update = menu->addAction(text("UpdatePreset"), this, [this] { savePreset(true); });
+		auto *rename = menu->addAction(text("RenamePreset"), this, [this] { renamePreset(); });
+		auto *remove = menu->addAction(text("DeletePreset"), this, [this] { deletePreset(); });
+		connect(menu, &QMenu::aboutToShow, this, [this, update, rename, remove] {
+			const bool selected = presetChoice->currentIndex() > 0;
+			for (auto *action : {update, rename, remove})
+				action->setEnabled(selected);
+		});
+		manage->setMenu(menu);
+		buttons->addWidget(apply);
+		buttons->addWidget(manage);
+		presetsRow->addLayout(buttons);
+		form->addRow(text("TransformPresets"), presetsRow);
+		connect(apply, &QPushButton::clicked, this, [this] { applyPreset(); });
+		connect(presetChoice, &QComboBox::currentIndexChanged, apply,
+			[apply](int index) { apply->setEnabled(index > 0); });
+		reloadPresets();
+		apply->setEnabled(false);
+	}
 	addNumber(form, "PositionX", -1000000, 1000000);
 	addNumber(form, "PositionY", -1000000, 1000000);
 	addNumber(form, "ScaleX", -100000, 100000);
@@ -200,6 +242,108 @@ void TransformEditor::synchronize()
 	fields.at("BoundsHeightValue")->setEnabled(bounded);
 	boundsAlignment->setEnabled(bounded);
 	cropToBounds->setEnabled(bounded);
+}
+
+bool TransformEditor::setSearchQuery(const QString &query)
+{
+	return search.apply(qobject_cast<QFormLayout *>(controls->layout()), query);
+}
+
+void TransformEditor::reloadPresets(const QString &selected)
+{
+	presets = inspector::loadTransformPresets(*preferences);
+	presetChoice->clear();
+	presetChoice->addItem(text("ChoosePreset"));
+	for (const auto &preset : presets)
+		presetChoice->addItem(preset.name);
+	presetChoice->setCurrentIndex(std::max(0, presetChoice->findText(selected)));
+}
+
+QString TransformEditor::requestPresetName(const QString &initial, int except)
+{
+	QString name = initial;
+	for (;;) {
+		bool ok = false;
+		name = QInputDialog::getText(this, text("TransformPresets"), text("PresetName"), QLineEdit::Normal,
+					     name, &ok)
+			       .trimmed();
+		if (!ok)
+			return {};
+		bool exists = false;
+		for (size_t i = 0; i < presets.size(); ++i) {
+			if (static_cast<int>(i) != except && presets[i].name.compare(name, Qt::CaseInsensitive) == 0)
+				exists = true;
+		}
+		if (!name.isEmpty() && !exists)
+			return name;
+		QMessageBox::information(this, text("TransformPresets"),
+					 text(name.isEmpty() ? "NameRequired" : "PresetNameExists"));
+	}
+}
+
+void TransformEditor::writePresets(const QString &selected)
+{
+	if (!inspector::saveTransformPresets(*preferences, presets))
+		QMessageBox::warning(this, text("TransformPresets"), text("PresetSaveFailed"));
+	reloadPresets(selected);
+}
+
+void TransformEditor::savePreset(bool replace)
+{
+	const int index = presetChoice->currentIndex() - 1;
+	if (replace && (index < 0 || static_cast<size_t>(index) >= presets.size()))
+		return;
+	const QString name =
+		replace ? presets[index].name
+			: requestPresetName(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(item))));
+	if (name.isEmpty() || !obs_sceneitem_get_scene(item))
+		return;
+	inspector::TransformPreset preset;
+	preset.name = name;
+	obs_sceneitem_get_info2(item, &preset.info);
+	obs_sceneitem_get_crop(item, &preset.crop);
+	if (replace)
+		presets[index] = preset;
+	else
+		presets.push_back(preset);
+	writePresets(name);
+}
+
+void TransformEditor::renamePreset()
+{
+	const int index = presetChoice->currentIndex() - 1;
+	if (index < 0 || static_cast<size_t>(index) >= presets.size())
+		return;
+	const QString name = requestPresetName(presets[index].name, index);
+	if (!name.isEmpty()) {
+		presets[index].name = name;
+		writePresets(name);
+	}
+}
+
+void TransformEditor::deletePreset()
+{
+	const int index = presetChoice->currentIndex() - 1;
+	if (index < 0 || static_cast<size_t>(index) >= presets.size())
+		return;
+	if (QMessageBox::question(this, text("DeletePreset"), text("DeletePresetConfirm").arg(presets[index].name),
+				  QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+		return;
+	presets.erase(presets.begin() + index);
+	writePresets({});
+}
+
+void TransformEditor::applyPreset()
+{
+	const int index = presetChoice->currentIndex() - 1;
+	if (index < 0 || static_cast<size_t>(index) >= presets.size())
+		return;
+	const auto preset = presets[index];
+	inspector::editTransform(rootScene, item, text("ApplyPreset") + " — " + preset.name, [this, preset] {
+		obs_sceneitem_set_info2(item, &preset.info);
+		obs_sceneitem_set_crop(item, &preset.crop);
+	});
+	synchronize();
 }
 
 void TransformEditor::action(const QString &name)

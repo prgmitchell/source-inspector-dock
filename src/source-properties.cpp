@@ -51,6 +51,7 @@ SourceProperties::SourceProperties(obs_source_t *source_, QWidget *parent) : QWi
 			container->layout()->activate();
 			view->setFixedHeight(container->sizeHint().height() + 4);
 		}
+		applySearch();
 	});
 	signal_handler_connect(obs_source_get_signal_handler(source), "update_properties", propertiesChanged, this);
 }
@@ -70,6 +71,34 @@ void SourceProperties::cancel()
 	cancelled = true;
 	dirty = false;
 	setEnabled(false);
+}
+
+void SourceProperties::finishPendingEdit()
+{
+	if (!cancelled && !view->DeferUpdate())
+		flush();
+}
+
+bool SourceProperties::setSearchQuery(const QString &query)
+{
+	searchQuery = query;
+	applySearch();
+	return searchMatches;
+}
+
+void SourceProperties::applySearch()
+{
+	auto *container = view->QScrollArea::widget();
+	auto *form = container ? qobject_cast<QFormLayout *>(container->layout()) : nullptr;
+	const bool matches = search.apply(form, searchQuery);
+	if (container && container->layout()) {
+		container->layout()->activate();
+		view->setFixedHeight(container->sizeHint().height() + 4);
+	}
+	if (matches != searchMatches) {
+		searchMatches = matches;
+		emit searchResultsChanged();
+	}
 }
 
 obs_properties_t *SourceProperties::reload(void *data)

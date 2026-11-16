@@ -4,15 +4,18 @@
 #include "source-properties.hpp"
 #include "transform-editor.hpp"
 #include "undo.hpp"
+#include "filter-stack.hpp"
+#include "scene-utils.hpp"
 #include <obs-frontend-api.h>
 #include <QApplication>
-#include <QCheckBox>
 #include <QDir>
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <algorithm>
 
 namespace {
@@ -41,17 +44,50 @@ InspectorDock::InspectorDock(QWidget *parent) : QWidget(parent)
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(8, 8, 8, 8);
 	title = new QLabel(text("DockTitle"));
+	title->setObjectName("InspectedSourceName");
 	title->setTextFormat(Qt::PlainText);
 	title->setWordWrap(true);
 	auto font = title->font();
 	font.setBold(true);
 	font.setPointSizeF(font.pointSizeF() + 2);
 	title->setFont(font);
-	layout->addWidget(title);
+	auto *heading = new QHBoxLayout;
+	heading->addWidget(title, 1);
+	pin = new QToolButton;
+	pin->setObjectName("PinSource");
+	pin->setText(text("PinSource"));
+	pin->setToolTip(text("PinSourceTooltip"));
+	pin->setCheckable(true);
+	pin->setEnabled(false);
+	heading->addWidget(pin);
+	layout->addLayout(heading);
+	connect(pin, &QToolButton::toggled, this, [this](bool pinned) {
+		pin->setText(text(pinned ? "UnpinSource" : "PinSource"));
+		refresh();
+	});
 	subtitle = new QLabel;
 	subtitle->setTextFormat(Qt::PlainText);
 	subtitle->setWordWrap(true);
 	layout->addWidget(subtitle);
+	usage = new QToolButton;
+	usage->setObjectName("SourceUsage");
+	usage->setToolTip(text("SourceUsageTooltip"));
+	usage->hide();
+	layout->addWidget(usage, 0, Qt::AlignLeft);
+	connect(usage, &QToolButton::clicked, this, [this] { showUsage(); });
+	searchInput = new QLineEdit;
+	searchInput->setObjectName("SearchSettings");
+	searchInput->setPlaceholderText(text("SearchSettings"));
+	searchInput->setAccessibleName(text("SearchSettings"));
+	searchInput->setClearButtonEnabled(true);
+	searchInput->setEnabled(false);
+	layout->addWidget(searchInput);
+	connect(searchInput, &QLineEdit::textChanged, this, [this] { applySearch(); });
+	noMatches = new QLabel(text("NoSearchResults"));
+	noMatches->setObjectName("NoSearchResults");
+	noMatches->setWordWrap(true);
+	noMatches->hide();
+	layout->addWidget(noMatches);
 	empty = new QLabel(text("NoSelection"));
 	empty->setWordWrap(true);
 	empty->setAlignment(Qt::AlignCenter);
@@ -99,30 +135,68 @@ void InspectorDock::clear(bool removed)
 	if (removed) {
 		if (properties)
 			properties->cancel();
-		for (auto &filter : filters)
-			filter.editor->cancel();
+		if (filterStack)
+			filterStack->cancel();
 	}
 	// Destroy editors before releasing their source / scene-item references.
 	delete scroll->takeWidget();
 	filterSection = nullptr;
+	filterStack = nullptr;
+	propertySection = nullptr;
+	transformSection = nullptr;
 	properties = nullptr;
 	transform = nullptr;
-	filters.clear();
 	selectedItem = nullptr;
 	scroll->hide();
 	empty->show();
 	title->setText(text("DockTitle"));
 	subtitle->clear();
+	const QSignalBlocker blocker(pin);
+	pin->setChecked(false);
+	pin->setText(text("PinSource"));
+	pin->setEnabled(false);
+	searchInput->setEnabled(false);
+	noMatches->hide();
+	usage->hide();
+	usageScenes.clear();
+	usageRefresh.invalidate();
 }
 
 void InspectorDock::refresh()
 {
-	if (stopped || !isVisible() || QApplication::activeModalWidget())
+	if (stopped || !isVisible() || QApplication::activeModalWidget() || QApplication::activePopupWidget())
 		return;
+	if (selectedItem &&
+	    (!scene || obs_source_removed(scene) || obs_source_removed(obs_sceneitem_get_source(selectedItem)) ||
+	     !inspector::sceneContainsItem(obs_scene_from_source(scene), selectedItem))) {
+		clear(true);
+		previousSelection.clear();
+	}
 	OBSSourceAutoRelease current = obs_frontend_preview_program_mode_active()
 					       ? obs_frontend_get_current_preview_scene()
 					       : obs_frontend_get_current_scene();
-	inspectScene(current);
+	if (!pin->isChecked())
+		inspectScene(current);
+	if (!selectedItem)
+		return;
+	auto *source = obs_sceneitem_get_source(selectedItem);
+	title->setText(QString::fromUtf8(obs_source_get_name(source)));
+	const char *display = obs_source_get_display_name(obs_source_get_id(source));
+	QString description = QString::fromUtf8(display ? display : obs_source_get_id(source));
+	description +=
+		QStringLiteral(" · %1 × %2").arg(obs_source_get_width(source)).arg(obs_source_get_height(source));
+	if (pin->isChecked())
+		description += "\n" + text("PinnedScene").arg(QString::fromUtf8(obs_source_get_name(scene)));
+	else if (previousSelection.size() > 1)
+		description += "\n" + text("MultipleSelected").arg(static_cast<qulonglong>(previousSelection.size()));
+	subtitle->setText(description);
+	transform->synchronize();
+	properties->synchronize();
+	filterStack->synchronize();
+	filterSection->toggle->setText(text("Filters") + QStringLiteral(" (%1)").arg(filterStack->count()));
+	applySearch();
+	if (!usageRefresh.isValid() || usageRefresh.elapsed() >= 1000)
+		updateUsage();
 }
 
 void InspectorDock::inspectScene(obs_source_t *current)
@@ -154,20 +228,6 @@ void InspectorDock::inspectScene(obs_source_t *current)
 		if (selectedItem)
 			populate();
 	}
-	if (!selectedItem)
-		return;
-	auto *source = obs_sceneitem_get_source(selectedItem);
-	title->setText(QString::fromUtf8(obs_source_get_name(source)));
-	const char *display = obs_source_get_display_name(obs_source_get_id(source));
-	QString description = QString::fromUtf8(display ? display : obs_source_get_id(source));
-	description +=
-		QStringLiteral(" · %1 × %2").arg(obs_source_get_width(source)).arg(obs_source_get_height(source));
-	if (selection.size() > 1)
-		description += "\n" + text("MultipleSelected").arg(static_cast<qulonglong>(selection.size()));
-	subtitle->setText(description);
-	transform->synchronize();
-	properties->synchronize();
-	synchronizeFilters();
 }
 
 void InspectorDock::rememberSection(Section *section, const QString &key)
@@ -188,17 +248,27 @@ void InspectorDock::populate()
 	sections->setSpacing(10);
 	sections->setSizeConstraint(QLayout::SetMinAndMaxSize);
 	sections->setAlignment(Qt::AlignTop);
-	auto *propertySection = new Section(text("SourceProperties"));
+	propertySection = new Section(text("SourceProperties"));
 	properties = new SourceProperties(source);
+	connect(
+		properties, &SourceProperties::searchResultsChanged, this, [this] { applySearch(); },
+		Qt::QueuedConnection);
 	propertySection->content->addWidget(properties);
 	rememberSection(propertySection, "sections/properties");
 	sections->addWidget(propertySection);
-	auto *transformSection = new Section(text("Transform"));
-	transform = new TransformEditor(obs_scene_from_source(scene), selectedItem);
+	transformSection = new Section(text("Transform"));
+	transform = new TransformEditor(obs_scene_from_source(scene), selectedItem, preferences.get());
 	transformSection->content->addWidget(transform);
 	rememberSection(transformSection, "sections/transform");
 	sections->addWidget(transformSection);
 	filterSection = new Section(text("Filters"));
+	filterStack = new FilterStack(source, preferences.get());
+	filterSection->content->addWidget(filterStack);
+	connect(filterStack, &FilterStack::searchResultsChanged, this, [this] { applySearch(); }, Qt::QueuedConnection);
+	auto *add = new QPushButton(text("AddFilter"));
+	add->setObjectName("AddFilter");
+	filterSection->header->addWidget(add);
+	connect(add, &QPushButton::clicked, filterStack, &FilterStack::addFilter);
 	auto *manage = new QPushButton(text("ManageFilters"));
 	manage->setToolTip(text("ManageFiltersTooltip"));
 	filterSection->header->addWidget(manage);
@@ -211,55 +281,54 @@ void InspectorDock::populate()
 	scroll->setWidget(contents);
 	empty->hide();
 	scroll->show();
+	pin->setEnabled(true);
+	searchInput->setEnabled(true);
 }
 
-void InspectorDock::synchronizeFilters()
+void InspectorDock::applySearch()
 {
-	std::vector<OBSSource> current;
-	obs_source_enum_filters(
-		obs_sceneitem_get_source(selectedItem),
-		[](obs_source_t *, obs_source_t *filter, void *data) {
-			static_cast<std::vector<OBSSource> *>(data)->emplace_back(filter);
-		},
-		&current);
-	bool changed = current.size() != filters.size();
-	for (size_t i = 0; !changed && i < current.size(); ++i)
-		changed = current[i] != filters[i].source;
-	if (changed) {
-		for (auto &filter : filters) {
-			if (std::find(current.begin(), current.end(), filter.source) == current.end())
-				filter.editor->cancel();
-		}
-		while (auto *entry = filterSection->content->takeAt(0)) {
-			delete entry->widget();
-			delete entry;
-		}
-		filters.clear();
-		for (const auto &source : current) {
-			auto *section = new Section(QString::fromUtf8(obs_source_get_name(source)));
-			auto *enabled = new QCheckBox(text("Enabled"));
-			enabled->setChecked(obs_source_enabled(source));
-			section->header->addWidget(enabled);
-			auto *editor = new SourceProperties(source);
-			section->content->addWidget(editor);
-			rememberSection(section, "filters/" + QString::fromUtf8(obs_source_get_uuid(source)));
-			connect(enabled, &QCheckBox::clicked, section,
-				[source](bool checked) { inspector::setFilterEnabled(source, checked); });
-			filterSection->content->addWidget(section);
-			filters.push_back({source, section, enabled, editor});
-		}
+	if (!properties || !transform || !filterStack)
+		return;
+	const QString query = searchInput->text().trimmed();
+	const bool active = !query.isEmpty();
+	const bool propertyMatch = properties->setSearchQuery(
+		text("SourceProperties").contains(query, Qt::CaseInsensitive) ? QString() : query);
+	const bool transformMatch =
+		transform->setSearchQuery(text("Transform").contains(query, Qt::CaseInsensitive) ? QString() : query);
+	const bool filterMatch =
+		filterStack->setSearchQuery(text("Filters").contains(query, Qt::CaseInsensitive) ? QString() : query);
+	propertySection->setSearchState(active, propertyMatch);
+	transformSection->setSearchState(active, transformMatch);
+	filterSection->setSearchState(active, filterMatch);
+	noMatches->setVisible(active && !propertyMatch && !transformMatch && !filterMatch);
+}
+
+void InspectorDock::updateUsage()
+{
+	usageScenes.clear();
+	if (!selectedItem)
+		return;
+	obs_frontend_source_list scenes = {};
+	obs_frontend_get_scenes(&scenes);
+	for (size_t i = 0; i < scenes.sources.num; ++i) {
+		auto *source = scenes.sources.array[i];
+		if (inspector::sceneUsesSource(obs_scene_from_source(source), obs_sceneitem_get_source(selectedItem)))
+			usageScenes.push_back(QString::fromUtf8(obs_source_get_name(source)));
 	}
-	// Initial empty stack also needs a useful empty state.
-	if (current.empty() && filterSection->content->count() == 0) {
-		auto *label = new QLabel(text("NoFilters"));
-		label->setWordWrap(true);
-		filterSection->content->addWidget(label);
-	}
-	filterSection->toggle->setText(text("Filters") + QStringLiteral(" (%1)").arg(filters.size()));
-	for (auto &filter : filters) {
-		filter.section->toggle->setText(QString::fromUtf8(obs_source_get_name(filter.source)));
-		const QSignalBlocker blocker(filter.enabled);
-		filter.enabled->setChecked(obs_source_enabled(filter.source));
-		filter.editor->synchronize();
-	}
+	obs_frontend_source_list_free(&scenes);
+	usageScenes.sort(Qt::CaseInsensitive);
+	usage->setText(usageScenes.size() == 1 ? text("UsedInOneScene") : text("UsedInScenes").arg(usageScenes.size()));
+	usage->show();
+	usageRefresh.restart();
+}
+
+void InspectorDock::showUsage()
+{
+	if (!selectedItem)
+		return;
+	updateUsage();
+	QMessageBox message(QMessageBox::Information, text("SourceUsage"),
+			    text("SourceUsageDetails").arg(usageScenes.join("\n")), QMessageBox::Ok, this);
+	message.setTextFormat(Qt::PlainText);
+	message.exec();
 }
