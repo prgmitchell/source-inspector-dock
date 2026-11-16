@@ -37,7 +37,7 @@ std::vector<inspector::TransformPreset> inspector::loadTransformPresets(QSetting
 	const auto document = QJsonDocument::fromJson(settings.value("transformPresets").toByteArray()).object();
 	if (document.value("version").toInt() != 1)
 		return result;
-	for (const auto &value : document.value("presets").toArray()) {
+	for (const auto value : document.value("presets").toArray()) {
 		const auto object = value.toObject();
 		const QString name = object.value("name").toString().trimmed();
 		if (name.isEmpty() || std::any_of(result.begin(), result.end(), [&](const TransformPreset &preset) {
